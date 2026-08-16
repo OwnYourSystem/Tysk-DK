@@ -1,16 +1,12 @@
 import express from "express";
 import path from "path";
-import { fileURLToPath } from "url";
 import { GoogleGenAI, Modality } from "@google/genai";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 
@@ -18,18 +14,33 @@ app.use(express.json());
 let aiClient: GoogleGenAI | null = null;
 function getAI(): GoogleGenAI {
   if (!aiClient) {
+    const project = process.env.GOOGLE_CLOUD_PROJECT;
+    const location = process.env.GOOGLE_CLOUD_LOCATION || "global";
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.warn("GEMINI_API_KEY not found in environment. AI features will operate in fallback mode.");
-    }
-    aiClient = new GoogleGenAI({
-      apiKey: apiKey || "",
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
+    if (project) {
+      aiClient = new GoogleGenAI({
+        vertexai: true,
+        project,
+        location,
+        httpOptions: {
+          headers: {
+            "User-Agent": "tysk-dk",
+          },
         },
-      },
-    });
+      });
+    } else {
+      if (!apiKey) {
+        console.warn("Neither GOOGLE_CLOUD_PROJECT nor GEMINI_API_KEY is configured.");
+      }
+      aiClient = new GoogleGenAI({
+        apiKey: apiKey || "",
+        httpOptions: {
+          headers: {
+            "User-Agent": "tysk-dk",
+          },
+        },
+      });
+    }
   }
   return aiClient;
 }
