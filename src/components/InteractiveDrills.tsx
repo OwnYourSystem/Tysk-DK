@@ -3,10 +3,13 @@ import { Dumbbell, CheckCircle2, XCircle, RefreshCw, Sparkles, HelpCircle, Arrow
 import { DrillItem } from '../types';
 import { LESSONS_DATABASE } from '../data/contrastiveCurriculum';
 import { playGermanAudio } from '../utils/audio';
+import { authorizedFetch } from '../auth/firebase';
+import { useProgress } from '../progress/ProgressProvider';
 
 const ALL_CURRICULUM_DRILLS = LESSONS_DATABASE.flatMap((l) => l.drills);
 
 export const InteractiveDrills: React.FC = () => {
+  const { recordDrillAttempt } = useProgress();
   const [drills, setDrills] = useState<DrillItem[]>(ALL_CURRICULUM_DRILLS);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
@@ -35,7 +38,9 @@ export const InteractiveDrills: React.FC = () => {
   const handleCheckSentence = () => {
     setSubmitted(true);
     const constructed = tokenArrangement.join(' ').trim();
-    if (constructed === activeDrill.targetGerman.trim()) {
+    const correct = constructed === activeDrill.targetGerman.trim();
+    recordDrillAttempt(correct);
+    if (correct) {
       setScore((s) => s + 1);
     }
   };
@@ -44,7 +49,9 @@ export const InteractiveDrills: React.FC = () => {
     if (submitted) return;
     setSelectedOption(opt);
     setSubmitted(true);
-    if (opt === activeDrill.correctOption) {
+    const correct = opt === activeDrill.correctOption;
+    recordDrillAttempt(correct);
+    if (correct) {
       setScore((s) => s + 1);
     }
   };
@@ -57,7 +64,7 @@ export const InteractiveDrills: React.FC = () => {
   const handleGenerateAIDrills = async (topic: string) => {
     setIsGenerating(true);
     try {
-      const res = await fetch('/api/tutor/generate-exercise', {
+      const res = await authorizedFetch('/api/tutor/generate-exercise', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ topic, type: 'sentence_builder' }),

@@ -1,5 +1,5 @@
 {
-  "name": "Tysk via Dansk",
+  "name": "OYS Language Pal",
   "description": "Specialized German tutor leveraging Danish B2 knowledge as a cognitive bridge with contrastive syntax, false friend warnings, and 3-part correction loop.",
   "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

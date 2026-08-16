@@ -1,35 +1,174 @@
 import express from "express";
 import path from "path";
-import { fileURLToPath } from "url";
 import { GoogleGenAI, Modality } from "@google/genai";
 import dotenv from "dotenv";
+import rateLimit from "express-rate-limit";
+import { getApps, initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
+import { getFirestore } from "firebase-admin/firestore";
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "32kb" }));
+
+const ALLOWED_USER_EMAIL = (process.env.ALLOWED_USER_EMAIL || "").trim().toLowerCase();
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || "";
+
+if (process.env.NODE_ENV === "production" && !ALLOWED_USER_EMAIL) {
+  throw new Error("ALLOWED_USER_EMAIL must be configured in production.");
+}
+
+const firebaseAdminApp = getApps()[0] ?? initializeApp({ projectId: FIREBASE_PROJECT_ID });
+const firebaseAuth = getAuth(firebaseAdminApp);
+const firestore = getFirestore(firebaseAdminApp);
+const FIREBASE_HOSTING_AUTH_DOMAIN = `${FIREBASE_PROJECT_ID}.firebaseapp.com`;
+
+async function requireApprovedUser(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const authorization = req.header("authorization") || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  if (!token) return res.status(401).json({ error: "Authentication required" });
+
+  try {
+    const decoded = await firebaseAuth.verifyIdToken(token, true);
+    const email = decoded.email?.toLowerCase();
+    if (!decoded.email_verified || email !== ALLOWED_USER_EMAIL) {
+      return res.status(403).json({ error: "This account is not approved for the private alpha" });
+    }
+    (req as express.Request & { authUser?: { uid: string; email: string } }).authUser = {
+      uid: decoded.uid,
+      email,
+    };
+    return next();
+  } catch {
+    return res.status(401).json({ error: "Invalid or expired authentication" });
+  }
+}
+
+const privateApiLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 30,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  keyGenerator: (req) => (req as express.Request & { authUser?: { uid: string } }).authUser?.uid || "anonymous",
+  message: { error: "Please wait a moment before making more requests" },
+});
+
+// Keep Firebase's OAuth helper on the same origin as the PWA. This avoids
+// popup/redirect failures in browsers that isolate cross-origin opener state.
+app.get(/^\/__\/auth\//, async (req, res) => {
+  try {
+    const upstream = await fetch(`https://${FIREBASE_HOSTING_AUTH_DOMAIN}${req.originalUrl}`, {
+      headers: {
+        accept: req.header("accept") || "*/*",
+        "accept-language": req.header("accept-language") || "en",
+        "user-agent": req.header("user-agent") || "OYS Language Pal",
+      },
+    });
+    const contentType = upstream.headers.get("content-type");
+    const cacheControl = upstream.headers.get("cache-control");
+    if (contentType) res.set("Content-Type", contentType);
+    if (cacheControl) res.set("Cache-Control", cacheControl);
+    return res.status(upstream.status).send(Buffer.from(await upstream.arrayBuffer()));
+  } catch {
+    return res.status(502).send("Authentication helper unavailable");
+  }
+});
+
+app.get("/api/config", (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json({
+    allowedEmail: ALLOWED_USER_EMAIL,
+    firebase: {
+      apiKey: process.env.FIREBASE_API_KEY || "",
+      appId: process.env.FIREBASE_APP_ID || "",
+      authDomain: process.env.FIREBASE_AUTH_DOMAIN || "",
+      projectId: FIREBASE_PROJECT_ID,
+    },
+  });
+});
+
+app.get("/api/reset", (_req, res) => {
+  res.set("Clear-Site-Data", '"cache", "cookies", "storage"');
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(`<!doctype html>
+    <html lang="en">
+      <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Resetting OYS Language Pal</title></head>
+      <body style="font-family:system-ui;background:#1c1917;color:white;display:grid;place-items:center;min-height:100vh;margin:0;text-align:center">
+        <main><h1>Application reset</h1><p>The old offline cache and sign-in session were cleared.</p><a href="/" style="color:#fbbf24">Return to OYS Language Pal</a></main>
+        <script>setTimeout(() => location.replace('/?reset=complete'), 800);</script>
+      </body>
+    </html>`);
+});
+
+app.use("/api/tutor", requireApprovedUser, privateApiLimiter);
+app.use("/api/progress", requireApprovedUser, privateApiLimiter);
+
+const DEFAULT_PROGRESS = {
+  activeTab: "chat",
+  drillAttempts: 0,
+  correctAnswers: 0,
+  completedLessonIds: [] as string[],
+};
+
+app.get("/api/progress", async (req, res) => {
+  const user = (req as express.Request & { authUser: { uid: string; email: string } }).authUser;
+  const snapshot = await firestore.collection("users").doc(user.uid).get();
+  res.set("Cache-Control", "no-store");
+  return res.json(snapshot.exists ? { ...DEFAULT_PROGRESS, ...snapshot.data() } : DEFAULT_PROGRESS);
+});
+
+app.patch("/api/progress", async (req, res) => {
+  const user = (req as express.Request & { authUser: { uid: string; email: string } }).authUser;
+  const patch: Record<string, unknown> = {};
+  const allowedTabs = new Set(["chat", "lab", "dictionary", "syntax", "false_friends", "drills", "lessons"]);
+
+  if (typeof req.body.activeTab === "string" && allowedTabs.has(req.body.activeTab)) patch.activeTab = req.body.activeTab;
+  if (Number.isInteger(req.body.drillAttempts) && req.body.drillAttempts >= 0) patch.drillAttempts = Math.min(req.body.drillAttempts, 1_000_000);
+  if (Number.isInteger(req.body.correctAnswers) && req.body.correctAnswers >= 0) patch.correctAnswers = Math.min(req.body.correctAnswers, 1_000_000);
+  if (Array.isArray(req.body.completedLessonIds)) {
+    patch.completedLessonIds = req.body.completedLessonIds.filter((value: unknown): value is string => typeof value === "string").slice(0, 500);
+  }
+
+  patch.email = user.email;
+  patch.updatedAt = new Date().toISOString();
+  await firestore.collection("users").doc(user.uid).set(patch, { merge: true });
+  return res.json({ ok: true, updatedAt: patch.updatedAt });
+});
 
 // Lazy-initialize Gemini AI client
 let aiClient: GoogleGenAI | null = null;
 function getAI(): GoogleGenAI {
   if (!aiClient) {
+    const project = process.env.GOOGLE_CLOUD_PROJECT;
+    const location = process.env.GOOGLE_CLOUD_LOCATION || "global";
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.warn("GEMINI_API_KEY not found in environment. AI features will operate in fallback mode.");
-    }
-    aiClient = new GoogleGenAI({
-      apiKey: apiKey || "",
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
+    if (project) {
+      aiClient = new GoogleGenAI({
+        vertexai: true,
+        project,
+        location,
+        httpOptions: {
+          headers: {
+            "User-Agent": "tysk-dk",
+          },
         },
-      },
-    });
+      });
+    } else {
+      if (!apiKey) {
+        console.warn("Neither GOOGLE_CLOUD_PROJECT nor GEMINI_API_KEY is configured.");
+      }
+      aiClient = new GoogleGenAI({
+        apiKey: apiKey || "",
+        httpOptions: {
+          headers: {
+            "User-Agent": "tysk-dk",
+          },
+        },
+      });
+    }
   }
   return aiClient;
 }
