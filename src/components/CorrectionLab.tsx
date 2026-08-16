@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Microscope, Sparkles, Volume2, ArrowRight, AlertOctagon, CheckCircle2, BookOpen, Lightbulb, RefreshCw } from 'lucide-react';
 import { SentenceAnalysisResult } from '../types';
 import { playGermanAudio, speakText } from '../utils/audio';
+import { authorizedFetch } from '../auth/firebase';
 
 const PRESET_TRAPS = [
   {
@@ -51,7 +52,7 @@ export const CorrectionLab: React.FC = () => {
     setAnalysis(null);
 
     try {
-      const res = await fetch('/api/tutor/analyze', {
+      const res = await authorizedFetch('/api/tutor/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

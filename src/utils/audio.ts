@@ -1,3 +1,5 @@
+import { authorizedFetch } from '../auth/firebase';
+
 // Web Audio and Speech synthesis utility for German and Danish audio pronunciation
 
 let audioCtx: AudioContext | null = null;
@@ -81,7 +83,7 @@ export function speakText(text: string, lang: 'de' | 'da' = 'de'): Promise<void>
 // Speak with Gemini TTS on the backend, falling back to browser speech synthesis
 export async function playGermanAudio(text: string): Promise<void> {
   try {
-    const res = await fetch('/api/tutor/tts', {
+    const res = await authorizedFetch('/api/tutor/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, voice: 'Kore' }),

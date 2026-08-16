@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Mic, MicOff, Volume2, Sparkles, AlertTriangle, ArrowRight, RefreshCw, MessageSquare, Info } from 'lucide-react';
 import { ChatMessage, SentenceAnalysisResult } from '../types';
 import { playGermanAudio, speakText } from '../utils/audio';
+import { authorizedFetch } from '../auth/firebase';
 
 const STARTER_PROMPTS = [
   {
@@ -111,7 +112,7 @@ Prøv at skrive eller sige en sætning på tysk, eller vælg et emne herunder!`,
     setLoading(true);
 
     try {
-      const res = await fetch('/api/tutor/chat', {
+      const res = await authorizedFetch('/api/tutor/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
